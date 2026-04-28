@@ -3,125 +3,168 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Project MAGPIE: Series Gap Auditor</title>
+    <title>Project MAGPIE: Bulk Series Gap Auditor</title>
     <style>
         body { font-family: sans-serif; background-color: #f4f7f6; color: #333; padding: 30px; }
-        .container { max-width: 900px; margin: 0 auto; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        .container { max-width: 1000px; margin: 0 auto; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
         h1 { color: #0056b3; margin-top: 0; }
         .upload-section { border: 2px dashed #ccc; padding: 30px; text-align: center; border-radius: 6px; margin-bottom: 25px; background: #fafafa; }
         .upload-section input[type="text"] { width: 80%; padding: 10px; font-size: 14px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 4px; }
-        button { padding: 10px 20px; font-size: 16px; background: #0056b3; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .param-inputs { display: flex; gap: 15px; justify-content: center; margin-bottom: 15px; width: 80%; margin: 0 auto 15px auto; }
+        .param-inputs input { width: 100%; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; text-align: center; font-weight: bold;}
+        button { padding: 10px 20px; font-size: 16px; background: #0056b3; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;}
         button:hover { background: #004494; }
+        .bulk-btn { background: #2e7d32; margin-top: 15px; width: 100%; font-size: 18px; padding: 15px;}
+        .bulk-btn:hover { background: #1b5e20; }
         .dashboard { display: none; }
         .series-card { border: 1px solid #eee; padding: 15px; border-radius: 6px; margin-bottom: 20px; }
         .series-header { font-size: 1.2em; font-weight: bold; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
         .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .koha-list, .ol-list { background: #fdfdfd; padding: 15px; border-radius: 4px; border: 1px solid #f0f0f0; }
+        .koha-list, .ol-list { background: #fdfdfd; padding: 15px; border-radius: 4px; border: 1px solid #f0f0f0; max-height: 400px; overflow-y: auto;}
         .koha-list h3 { color: #2e7d32; margin-top: 0; }
         .ol-list h3 { color: #c62828; margin-top: 0; }
         .owned-item { padding: 5px 0; border-bottom: 1px solid #eee; font-size: 0.9em; }
         .missing-item { padding: 5px 0; border-bottom: 1px solid #eee; font-size: 0.9em; color: #c62828; font-weight: bold; }
         .loading { color: #666; font-style: italic; }
         .error-text { color: red; font-weight: bold; margin-top: 10px; }
+        .progress-bar { background: #eee; height: 10px; border-radius: 5px; overflow: hidden; margin-top: 10px; display: none; }
+        .progress-fill { background: #2e7d32; height: 100%; width: 0%; transition: width 0.3s; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>Series Gap Auditor</h1>
-    <p>Enter your Koha Public JSON Report URL to analyze series holdings against the Open Library database.</p>
+    <h1>Bulk Series Gap Auditor</h1>
+    <p>Pull an entire collection code from Koha to identify gaps across all series.</p>
 
     <div class="upload-section" id="upload-box">
-        <input type="text" id="json-url" placeholder="Paste Koha JSON URL here (e.g., https://staff.mckinney.../svc/report?id=123)">
-        <br>
-        <button onclick="fetchKohaData()">Run Live Audit</button>
+        <input type="text" id="json-url" placeholder="Paste New Koha JSON URL here">
+        
+        <div class="param-inputs">
+            <input type="text" id="koha-ccode" placeholder="Enter Collection Code (e.g., JUV_FIC)">
+        </div>
+
+        <button onclick="fetchKohaData()">Load Collection from Koha</button>
         <div id="error-message" class="error-text"></div>
     </div>
 
     <div class="dashboard" id="dashboard">
-        <h2>Audit Results</h2>
+        <h2 id="dashboard-title">Collection Audit Results</h2>
+        
+        <button class="bulk-btn" id="bulk-btn" onclick="runBulkAudit()">Start Bulk Open Library Audit (Slow/Safe Mode)</button>
+        <div class="progress-bar" id="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        
+        <hr style="margin: 30px 0; border: 1px solid #eee;">
+        
         <div id="results-container"></div>
     </div>
 </div>
 
 <script>
+    // A helper function to pause execution and prevent API rate limits
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    // Global variable to keep track of the series cards for bulk processing
+    let allSeriesNames = [];
+
     async function fetchKohaData() {
         let urlInput = document.getElementById('json-url').value.trim();
+        let ccodeInput = document.getElementById('koha-ccode').value.trim();
+        
         const errorDiv = document.getElementById('error-message');
         errorDiv.innerText = '';
 
-        if (!urlInput) {
-            errorDiv.innerText = 'Please enter a valid Koha JSON URL.';
+        if (!urlInput || !ccodeInput) {
+            errorDiv.innerText = 'Please enter both the JSON URL and the Collection Code.';
             return;
         }
 
         try {
-            // Strip the base ByWater domain to use our new Vercel proxy setup
             let apiPath = urlInput.replace('https://mckinney.bywatersolutions.com/', '');
-            
-            // Route the request through the Vercel backend we configured in vercel.json
+            apiPath += `&sql_params=${encodeURIComponent(ccodeInput)}`;
             const proxyUrl = `/proxy/koha/${apiPath}`;
+            
+            document.getElementById('upload-box').style.opacity = '0.5';
             
             const response = await fetch(proxyUrl);
             if (!response.ok) throw new Error(`Server returned ${response.status}: ${response.statusText}`);
             
             const data = await response.json();
-            
-            // Check if Koha returned an array of data
-            if (!Array.isArray(data)) {
-                throw new Error("The URL did not return a valid JSON array. The report may not be public.");
+            document.getElementById('upload-box').style.opacity = '1';
+
+            if (!Array.isArray(data) || data.length === 0) {
+                throw new Error("No books found. Check your collection code or ensure the report is public.");
             }
 
-            // Group the Koha data by series_name
+            // Clean and group the data
             const seriesGroups = {};
             data.forEach(book => {
-                const sName = book.series_name; 
+                // Many catalogers add random punctuation at the end of 490 tags. We clean it up here.
+                let sName = book.series_name;
                 if (sName) {
-                    if (!seriesGroups[sName]) seriesGroups[sName] = [];
-                    seriesGroups[sName].push(book);
+                    sName = sName.replace(/[^\w\s]/gi, '').trim(); 
+                    if (sName.length > 2) { // Ignore garbage 1-letter series tags
+                        if (!seriesGroups[sName]) seriesGroups[sName] = [];
+                        seriesGroups[sName].push(book);
+                    }
                 }
             });
 
             document.getElementById('upload-box').style.display = 'none';
             document.getElementById('dashboard').style.display = 'block';
+            document.getElementById('dashboard-title').innerText = `Collection Loaded: ${Object.keys(seriesGroups).length} distinct series found.`;
             
             await renderDashboard(seriesGroups);
 
         } catch (error) {
             console.error(error);
-            errorDiv.innerText = `Failed to load data. Error: ${error.message}`;
+            document.getElementById('upload-box').style.opacity = '1';
+            errorDiv.innerText = `Failed to load data: ${error.message}`;
         }
     }
 
     async function renderDashboard(seriesGroups) {
         const container = document.getElementById('results-container');
         container.innerHTML = '';
+        allSeriesNames = []; // Reset global list
 
         for (const [seriesName, books] of Object.entries(seriesGroups)) {
-            // Sort Koha books by volume number
+            allSeriesNames.push(seriesName); // Add to our bulk processing list
+
             books.sort((a, b) => {
                 const volA = parseInt(a.volume_number) || 999;
                 const volB = parseInt(b.volume_number) || 999;
                 return volA - volB;
             });
 
+            // Remove duplicate titles in Koha (e.g. 5 copies of the same book)
+            const uniqueBooks = [];
+            const seenTitles = new Set();
+            for (const book of books) {
+                if (!seenTitles.has(book.title)) {
+                    seenTitles.add(book.title);
+                    uniqueBooks.push(book);
+                }
+            }
+
             const card = document.createElement('div');
             card.className = 'series-card';
+            card.id = `card-${seriesName.replace(/\s+/g, '-')}`;
             
-            let kohaHtml = books.map(b => `<div class="owned-item">Vol ${b.volume_number || '?'}: ${b.title}</div>`).join('');
+            let kohaHtml = uniqueBooks.map(b => `<div class="owned-item">Vol ${b.volume_number || '?'}: ${b.title}</div>`).join('');
 
             card.innerHTML = `
                 <div class="series-header">
-                    <span>Series: ${seriesName}</span>
-                    <button onclick="auditAgainstOpenLibrary('${seriesName.replace(/'/g, "\\'")}', this.closest('.series-card'))">Check for Gaps</button>
+                    <span>${seriesName}</span>
+                    <button onclick="auditAgainstOpenLibrary('${seriesName.replace(/'/g, "\\'")}', this.closest('.series-card'))">Check Single Gap</button>
                 </div>
                 <div class="comparison-grid">
                     <div class="koha-list">
-                        <h3>Owned in Koha (${books.length})</h3>
+                        <h3>Owned Unique Titles (${uniqueBooks.length})</h3>
                         ${kohaHtml}
                     </div>
                     <div class="ol-list">
-                        <p class="loading">Click 'Check for Gaps' to query Open Library...</p>
+                        <p class="loading">Waiting to query Open Library...</p>
                     </div>
                 </div>
             `;
@@ -129,9 +172,47 @@
         }
     }
 
+    // The Bulk Runner
+    async function runBulkAudit() {
+        const btn = document.getElementById('bulk-btn');
+        const pBar = document.getElementById('progress-bar');
+        const pFill = document.getElementById('progress-fill');
+        
+        btn.disabled = true;
+        btn.innerText = "Audit in progress... Do not close window.";
+        btn.style.background = "#666";
+        pBar.style.display = "block";
+
+        const total = allSeriesNames.length;
+
+        for (let i = 0; i < total; i++) {
+            const seriesName = allSeriesNames[i];
+            const cardId = `card-${seriesName.replace(/\s+/g, '-')}`;
+            const cardElement = document.getElementById(cardId);
+            
+            if (cardElement) {
+                // Scroll the card into view so the user can watch the progress
+                cardElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                
+                // Run the individual API check
+                await auditAgainstOpenLibrary(seriesName, cardElement);
+                
+                // CRITICAL: Wait 2.5 seconds before asking Open Library again to prevent IP ban
+                await sleep(2500); 
+            }
+
+            // Update Progress Bar
+            const percent = ((i + 1) / total) * 100;
+            pFill.style.width = `${percent}%`;
+        }
+
+        btn.innerText = "Audit Complete!";
+        btn.style.background = "#2e7d32";
+    }
+
     async function auditAgainstOpenLibrary(seriesName, cardElement) {
         const olContainer = cardElement.querySelector('.ol-list');
-        olContainer.innerHTML = `<p class="loading">Searching Open Library API for "${seriesName}"...</p>`;
+        olContainer.innerHTML = `<p class="loading" style="color:#0056b3; font-weight:bold;">Searching API...</p>`;
 
         try {
             const response = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(seriesName)}`);
@@ -149,13 +230,12 @@
                     html += `<div class="missing-item">Title: ${book.title} ${book.first_publish_year ? '('+book.first_publish_year+')' : ''}</div>`;
                 });
                 
-                html += `<p style="font-size: 0.8em; color: #666; margin-top: 15px;">*Note: Open Library series data is crowdsourced. Verify missing titles before purchasing.</p>`;
                 olContainer.innerHTML = html;
             } else {
-                olContainer.innerHTML = `<p>No records found in Open Library for this series.</p>`;
+                olContainer.innerHTML = `<p>No records found in Open Library.</p>`;
             }
         } catch (error) {
-            olContainer.innerHTML = `<p style="color:red;">Error connecting to Open Library API.</p>`;
+            olContainer.innerHTML = `<p style="color:red;">API Timeout/Error. Skipped.</p>`;
         }
     }
 </script>
