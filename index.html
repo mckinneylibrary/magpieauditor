@@ -32,7 +32,7 @@
     <p>Enter your Koha Public JSON Report URL to analyze series holdings against the Open Library database.</p>
 
     <div class="upload-section" id="upload-box">
-        <input type="text" id="json-url" placeholder="https://mckinney.bywatersolutions.com/cgi-bin/koha/svc/report?id=1162">
+        <input type="text" id="json-url" placeholder="Paste Koha JSON URL here (e.g., https://staff.mckinney.../svc/report?id=123)">
         <br>
         <button onclick="fetchKohaData()">Run Live Audit</button>
         <div id="error-message" class="error-text"></div>
@@ -46,7 +46,7 @@
 
 <script>
     async function fetchKohaData() {
-        const urlInput = document.getElementById('json-url').value.trim();
+        let urlInput = document.getElementById('json-url').value.trim();
         const errorDiv = document.getElementById('error-message');
         errorDiv.innerText = '';
 
@@ -56,27 +56,26 @@
         }
 
         try {
-            // Because Koha servers sometimes block browser requests (CORS), 
-            // we route the fetch through a free, open proxy to guarantee the data loads.
-            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(urlInput)}`;
+            // Strip the base ByWater domain to use our new Vercel proxy setup
+            let apiPath = urlInput.replace('https://mckinney.bywatersolutions.com/', '');
+            
+            // Route the request through the Vercel backend we configured in vercel.json
+            const proxyUrl = `/proxy/koha/${apiPath}`;
             
             const response = await fetch(proxyUrl);
-            if (!response.ok) throw new Error('Network response was not OK');
+            if (!response.ok) throw new Error(`Server returned ${response.status}: ${response.statusText}`);
             
-            const proxyData = await response.json();
-            
-            // The proxy returns the JSON as a string inside the 'contents' property
-            const data = JSON.parse(proxyData.contents);
+            const data = await response.json();
             
             // Check if Koha returned an array of data
             if (!Array.isArray(data)) {
-                throw new Error("The URL did not return a valid JSON array.");
+                throw new Error("The URL did not return a valid JSON array. The report may not be public.");
             }
 
             // Group the Koha data by series_name
             const seriesGroups = {};
             data.forEach(book => {
-                const sName = book.series_name; // Assuming your SQL column is named this
+                const sName = book.series_name; 
                 if (sName) {
                     if (!seriesGroups[sName]) seriesGroups[sName] = [];
                     seriesGroups[sName].push(book);
@@ -90,7 +89,7 @@
 
         } catch (error) {
             console.error(error);
-            errorDiv.innerText = `Failed to load data. Make sure the URL is correct and the report is public. Error: ${error.message}`;
+            errorDiv.innerText = `Failed to load data. Error: ${error.message}`;
         }
     }
 
