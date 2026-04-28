@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/proxy/koha/:path*",
+      "destination": "https://mckinney.bywatersolutions.com/:path*"
+    }
+  ]
+}
