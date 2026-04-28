@@ -38,10 +38,10 @@
     <p>Pull an entire collection code from Koha to identify gaps across all series.</p>
 
     <div class="upload-section" id="upload-box">
-        <input type="text" id="json-url" placeholder="Paste New Koha JSON URL here">
+        <input type="text" id="json-url" placeholder="Paste New Koha JSON URL here (e.g., https://mckinney.bywatersolutions.com/cgi-bin/koha/svc/report?id=...)">
         
         <div class="param-inputs">
-            <input type="text" id="koha-ccode" placeholder="Enter Collection Code (e.g., JUV_FIC)">
+            <input type="text" id="koha-ccode" placeholder="Enter Collection Code (e.g., JUV_FIC or JF)">
         </div>
 
         <button onclick="fetchKohaData()">Load Collection from Koha</button>
@@ -80,6 +80,7 @@
         }
 
         try {
+            // Strip the base ByWater domain to use our Vercel proxy
             let apiPath = urlInput.replace('https://mckinney.bywatersolutions.com/', '');
             apiPath += `&sql_params=${encodeURIComponent(ccodeInput)}`;
             const proxyUrl = `/proxy/koha/${apiPath}`;
@@ -96,23 +97,37 @@
                 throw new Error("No books found. Check your collection code or ensure the report is public.");
             }
 
-            // Clean and group the data
+            // Universal Data Translator (handles both labeled objects and flat arrays)
             const seriesGroups = {};
-            data.forEach(book => {
-                // Many catalogers add random punctuation at the end of 490 tags. We clean it up here.
-                let sName = book.series_name;
+            data.forEach(row => {
+                let sName = row.series_name !== undefined ? row.series_name : row[3];
+                let bTitle = row.title !== undefined ? row.title : row[1];
+                let bVol = row.volume_number !== undefined ? row.volume_number : row[4];
+
                 if (sName) {
-                    sName = sName.replace(/[^\w\s]/gi, '').trim(); 
-                    if (sName.length > 2) { // Ignore garbage 1-letter series tags
+                    // Clean up punctuation from cataloging quirks
+                    sName = String(sName).replace(/[^\w\s]/gi, '').trim(); 
+                    if (sName.length > 2) { 
                         if (!seriesGroups[sName]) seriesGroups[sName] = [];
-                        seriesGroups[sName].push(book);
+                        
+                        // Package the clean data for the dashboard
+                        seriesGroups[sName].push({
+                            title: bTitle,
+                            volume_number: bVol
+                        });
                     }
                 }
             });
 
+            const totalSeries = Object.keys(seriesGroups).length;
+
+            if (totalSeries === 0) {
+                throw new Error("Data was received from Koha, but no valid series tags (490$a) were found in this collection.");
+            }
+
             document.getElementById('upload-box').style.display = 'none';
             document.getElementById('dashboard').style.display = 'block';
-            document.getElementById('dashboard-title').innerText = `Collection Loaded: ${Object.keys(seriesGroups).length} distinct series found.`;
+            document.getElementById('dashboard-title').innerText = `Collection Loaded: ${totalSeries} distinct series found.`;
             
             await renderDashboard(seriesGroups);
 
@@ -137,7 +152,7 @@
                 return volA - volB;
             });
 
-            // Remove duplicate titles in Koha (e.g. 5 copies of the same book)
+            // Remove duplicate titles in Koha (e.g. multiple copies of the same book)
             const uniqueBooks = [];
             const seenTitles = new Set();
             for (const book of books) {
